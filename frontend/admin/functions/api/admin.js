@@ -1,14 +1,15 @@
-// 后台 API：模板下载 / 导入 / 配置 / 统计 / 日志 / 删除 / 诊断
+// 后台 API：模板下载 / 导入 / 配置 / 统计 / 日志 / 删除 / 诊断 / 预置数据
 export async function onRequest(ctx) {
   const { request, env, next } = ctx;
   const url = new URL(request.url);
   const path = url.pathname;
   const headers = { 'Content-Type': 'application/json' };
 
+  // 只处理 /api/admin/*，其余放行
   if (!path.startsWith('/api/admin/')) return next(request);
   try {
     if (path === '/api/admin/health')        return handleHealth(env, headers);
-    if (path === '/api/admin/template')      return handleTemplate(env, request);   // CSV 模板下载
+    if (path === '/api/admin/template')      return handleTemplate(env, request);
     if (path === '/api/admin/import_owners') return handleImport(request, env, headers);
     if (path === '/api/admin/config')        return handleConfig(request, env, headers);
     if (path === '/api/admin/save_poll')     return handleSavePoll(request, env, headers);
@@ -16,9 +17,12 @@ export async function onRequest(ctx) {
     if (path === '/api/admin/audit_logs')    return handleLogs(request, env, headers);
     if (path === '/api/admin/delete_user')   return handleDelete(request, env, headers);
     if (path === '/api/admin/diagnose')      return handleDiagnose(request, env, headers);
-    return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers });
+    if (path === '/api/admin/seed')          return handleSeed(request, env, headers);
+    if (path === '/api/admin/registry')      return handleRegistry(env, headers);
+    if (path === '/api/admin/export_csv')    return handleExportCSV(env, request);
+    return new Response(JSON.stringify({ error: 'Not Found', path }), { status: 404, headers });
   } catch (e) {
-    return new Response(JSON.stringify({ error: 'Server Error' }), { status: 500, headers });
+    return new Response(JSON.stringify({ error: 'Server Error', detail: e.message }), { status: 500, headers });
   }
 }
 
@@ -86,7 +90,7 @@ async function handleResult(env, h) {
   const voted = await env.DB.prepare('SELECT COUNT(*) c, COALESCE(SUM(o.area_cents),0) a FROM owner_identity o JOIN vote_records v ON o.uuid=v.uuid').first();
   const agree = await env.DB.prepare("SELECT COUNT(*) c, COALESCE(SUM(o.area_cents),0) a FROM owner_identity o JOIN vote_records v ON o.uuid=v.uuid WHERE v.vote_content='赞成'").first();
   const ph = total.c ? voted.c / total.c : 0, pa = total.a ? voted.a / total.a : 0;
-  const vh = voted.c ? agree.c / voted.c : 0, va = voted.a ? agree.a / voted.a : 0;
+  const vh = voted.c ? agree.c / voted.c : 0, va = total.a ? agree.a / total.a : 0;
   const partReq = 2 / 3;
   const agreeReq = (cat >= 6 && cat <= 8) ? 0.75 : 0.5;
   const agreeStrict = !(cat >= 6 && cat <= 8);
@@ -126,6 +130,48 @@ async function handleDiagnose(req, env, headers) {
   const o = await env.DB.prepare('SELECT COUNT(*) c FROM owner_identity').first(); r.owners = o.c;
   const v = await env.DB.prepare('SELECT COUNT(*) c FROM vote_records').first(); r.votes = v.c;
   return json(headers, { env: env.ENV, ...r });
+}
+
+// ====== 幂等预置 51 户测试数据（5645㎡），可重复调用，覆盖更新 ======
+async function handleSeed(req, env, headers) {
+  const SALT = env.HASH_SALT || '';
+  const owners = [
+    ['1-1-101',92],['1-1-102',99],['1-1-201',93],['1-1-202',112],['1-1-301',114],['1-1-302',94],
+    ['1-2-101',92],['1-2-102',104],['1-2-201',127],['1-2-202',116],['1-2-301',108],['1-2-302',102],
+    ['2-1-101',131],['2-1-102',110],['2-1-201',118],['2-1-202',108],['2-1-301',118],['2-1-302',101],
+    ['2-2-101',93],['2-2-102',130],['2-2-201',125],['2-2-202',113],['2-2-301',130],['2-2-302',129],
+    ['3-1-101',104],['3-1-102',132],['3-1-201',124],['3-1-202',115],['3-1-301',99],['3-1-302',110],
+    ['3-2-101',101],['3-2-102',106],['3-2-201',119],['3-2-202',132],['3-2-301',98],['3-2-302',92],
+    ['4-1-101',107],['4-1-102',94],['4-1-201',128],['4-1-202',121],['4-1-301',105],['4-1-302',115],
+    ['4-2-101',101],['4-2-102',99],['4-2-201',99],['4-2-202',95],['4-2-301',120],['4-2-302',125],
+    ['5-1-101',104],['5-1-102',129],['5-1-201',112]
+  ];
+  let inserted = 0, areaTotal = 0;
+  for (const [room, area] of owners) {
+    const hash = await sha256(`00000${''}${room}${SALT}`); // 与 verify 公式一致：phoneLast5 + idLast3(空) + room + SALT
+    const r = await env.DB.prepare('INSERT OR REPLACE INTO owner_identity (uuid, hash_digest, area_cents, room_no, import_batch) VALUES (?,?,?,?,?)')
+      .bind(crypto.randomUUID(), hash, area * 100, room, 'seed').run();
+    inserted++; areaTotal += area;
+  }
+  return json(headers, { total: owners.length, inserted, areaTotal });
+}
+
+// 业主清册（供后台列表 / 投票校验）
+async function handleRegistry(env, h) {
+  const rows = await env.DB.prepare('SELECT uuid, room_no, area_cents, has_voted FROM owner_identity ORDER BY room_no').all();
+  return json(h, rows.results || []);
+}
+
+// 导出 CSV 投票结果
+async function handleExportCSV(env, request) {
+  const rows = await env.DB.prepare('SELECT o.room_no, o.area_cents, v.vote_content, v.created_at FROM owner_identity o LEFT JOIN vote_records v ON o.uuid=v.uuid ORDER BY o.room_no').all();
+  const lines = ['房号,面积(㎡),投票选项,投票时间'];
+  for (const r of (rows.results || [])) {
+    lines.push(`${r.room_no},${(r.area_cents / 100).toFixed(2)},${r.vote_content || '未投票'},${r.created_at || ''}`);
+  }
+  return new Response('﻿' + lines.join('\n'), {
+    headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="投票结果.csv"' }
+  });
 }
 
 async function sha256(msg) {
