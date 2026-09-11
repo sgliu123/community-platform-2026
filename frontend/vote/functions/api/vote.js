@@ -5,17 +5,19 @@ export async function onRequest(ctx) {
   const path = url.pathname;
   const headers = { 'Content-Type': 'application/json' };
 
+  // 只处理 /api/vote/*，其余交给静态资源/next
   if (!path.startsWith('/api/vote/')) return next(request);
   try {
     if (path === '/api/vote/health')       return handleHealth(env, headers);
     if (path === '/api/vote/verify')       return handleVerify(request, env, headers);
     if (path === '/api/vote/submit_vote')  return handleSubmit(request, env, headers);
     if (path === '/api/vote/upload_url')   return handleUploadUrl(request, env, headers);
+    if (path === '/api/vote/attachment')   return handleAttachment(request, env, headers);
     if (path === '/api/vote/poll_result')  return handleResult(env, headers);
     if (path === '/api/vote/diagnose')     return handleDiagnose(request, env, headers);
-    return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers });
+    return new Response(JSON.stringify({ error: 'Not Found', path }), { status: 404, headers });
   } catch (e) {
-    return new Response(JSON.stringify({ error: 'Server Error' }), { status: 500, headers });
+    return new Response(JSON.stringify({ error: 'Server Error', detail: e.message }), { status: 500, headers });
   }
 }
 
@@ -28,10 +30,12 @@ async function handleHealth(env, h) {
 
 // 身份核验：SHA256(手机号后5 + 身份证后3 + 房号 + 盐)
 async function handleVerify(req, env, h) {
-  const { phoneLast5, idLast3, room } = await req.json();
-  if (!phoneLast5 || !idLast3 || !room) return json(h, { error: '缺少字段' }, 400);
+  const { phoneLast5, idLast3 = '', room } = await req.json();
+  if (!phoneLast5 || !room) return json(h, { error: '请填写核验信息' }, 400);
   const hash = await sha256(`${phoneLast5}${idLast3}${room}${env.HASH_SALT || ''}`);
-  const row = await env.DB.prepare('SELECT uuid, has_voted FROM owner_identity WHERE hash_digest = ?').bind(hash).first();
+  // 兼容新旧表名：优先 owner_identity，回落 owners
+  let row = await env.DB.prepare('SELECT uuid, has_voted FROM owner_identity WHERE hash_digest = ?').bind(hash).first();
+  if (!row) row = await env.DB.prepare('SELECT uuid, has_voted FROM owners WHERE hash = ?').bind(hash).first();
   if (!row) { await log(env, null, 'verify_fail', ''); return json(h, { error: '身份信息不匹配' }, 401); }
   if (row.has_voted) return json(h, { error: '您已投过票，不能重复投票' }, 409);
   await log(env, row.uuid, 'verify_success', '');
@@ -63,8 +67,18 @@ async function handleSubmit(req, env, h) {
 async function handleUploadUrl(req, env, h) {
   const { uuid, fileName, contentType } = await req.json();
   const key = `single_poll/${uuid}/${Date.now()}_${fileName}`;
-  const url = await env.ATTACH_BUCKET.createPresignedUrl({ key, expiresIn: 300, method: 'PUT', contentType });
-  return json(h, { uploadUrl: url, key });
+  const upUrl = await env.ATTACH_BUCKET.createPresignedUrl({ key, expiresIn: 300, method: 'PUT', contentType });
+  // 读签名 URL（默认有效期 1 小时，供前端预览）
+  const viewUrl = await env.ATTACH_BUCKET.createPresignedUrl({ key, expiresIn: 3600, method: 'GET' });
+  return json(h, { uploadUrl: upUrl, viewUrl, key });
+}
+
+// 附件预览：返回 R2 签名 URL（PDF / 图片均可直接 <img> / <iframe> 打开）
+async function handleAttachment(req, env, h) {
+  const key = new URL(req.url).searchParams.get('key');
+  if (!key) return json(h, { error: '缺少 key' }, 400);
+  const viewUrl = await env.ATTACH_BUCKET.createPresignedUrl({ key, expiresIn: 3600, method: 'GET' });
+  return json(h, { viewUrl });
 }
 
 // 表决结果统计（民法典第278条）
@@ -75,14 +89,14 @@ async function handleResult(env, h) {
   const voted = await env.DB.prepare('SELECT COUNT(*) c, COALESCE(SUM(o.area_cents),0) a FROM owner_identity o JOIN vote_records v ON o.uuid=v.uuid').first();
   const agree = await env.DB.prepare("SELECT COUNT(*) c, COALESCE(SUM(o.area_cents),0) a FROM owner_identity o JOIN vote_records v ON o.uuid=v.uuid WHERE v.vote_content='赞成'").first();
 
-  const ph = total.c ? voted.c / total.c : 0;   // 户数参与率
-  const pa = total.a ? voted.a / total.a : 0;   // 面积参与率
-  const vh = voted.c ? agree.c / voted.c : 0;   // 户数同意率
-  const va = voted.a ? agree.a / voted.a : 0;   // 面积同意率
+  const ph = total.c ? voted.c / total.c : 0;
+  const pa = total.a ? voted.a / total.a : 0;
+  const vh = voted.c ? agree.c / voted.c : 0;
+  const va = voted.a ? agree.a / voted.a : 0;
 
-  const partReq = 2 / 3;                        // 参与门槛：双 2/3（含）
-  const agreeReq = (cat >= 6 && cat <= 8) ? 0.75 : 0.5;  // 重大双3/4（含），一般双过半（不含）
-  const agreeStrict = !(cat >= 6 && cat <= 8);  // 一般事项用 >，重大用 >=
+  const partReq = 2 / 3;
+  const agreeReq = (cat >= 6 && cat <= 8) ? 0.75 : 0.5;
+  const agreeStrict = !(cat >= 6 && cat <= 8);
 
   const passPart = ph >= partReq && pa >= partReq;
   const passAgree = agreeStrict ? (vh > agreeReq && va > agreeReq) : (vh >= agreeReq && va >= agreeReq);
