@@ -17,7 +17,7 @@ function parseCSV(text) {
 }
 
 async function downloadTemplate() {
-  const r = await fetch('/api/template');
+  const r = await fetch('/api/admin/template');
   const blob = await r.blob();
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = '业主台账模板.csv'; a.click();
@@ -37,7 +37,7 @@ async function importOwners() {
       area: parseFloat(r.area) || 0,
       room: r.room
     }));
-    const res = await fetch('/api/import_owners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rows: chunk, batchId, adminEmail: ADMIN }) });
+    const res = await fetch('/api/admin/import_owners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rows: chunk, batchId, adminEmail: ADMIN }) });
     const d = await res.json();
     inserted += d.inserted || 0; skipped += d.skipped || 0;
   }
@@ -47,12 +47,12 @@ async function importOwners() {
 async function savePoll() {
   const title = document.getElementById('pollTitle').value;
   const category = parseInt(document.getElementById('pollCategory').value);
-  await fetch('/api/save_poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, category, adminEmail: ADMIN }) });
+  await fetch('/api/admin/save_poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, category, adminEmail: ADMIN }) });
   document.getElementById('pollMsg').textContent = '已保存';
 }
 
 async function loadResult() {
-  const d = await (await fetch('/api/poll_result')).json();
+  const d = await (await fetch('/api/admin/poll_result')).json();
   const box = document.getElementById('resultBox');
   const pct = v => (v * 100).toFixed(1) + '%';
   const req = d.thresholds;
@@ -71,7 +71,7 @@ async function loadResult() {
 }
 
 async function loadLogs() {
-  const rows = await (await fetch('/api/audit_logs')).json();
+  const rows = await (await fetch('/api/admin/audit_logs')).json();
   document.getElementById('logBody').innerHTML = rows.map(l => `<tr><td>${new Date(l.created_at).toLocaleString()}</td><td>${l.action}</td><td>${l.detail || ''}</td></tr>`).join('');
 }
 
@@ -79,12 +79,12 @@ async function deleteUser() {
   const uuid = document.getElementById('delUuid').value.trim();
   if (!uuid) return;
   if (!confirm('确定删除该用户全部数据？不可撤销')) return;
-  await fetch('/api/delete_user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uuid, adminEmail: ADMIN }) });
+  await fetch('/api/admin/delete_user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uuid, adminEmail: ADMIN }) });
   document.getElementById('delMsg').textContent = '已删除';
 }
 
 async function diagnose() {
-  const d = await (await fetch('/api/diagnose')).json();
+  const d = await (await fetch('/api/admin/diagnose')).json();
   document.getElementById('diagResult').textContent = JSON.stringify(d, null, 2);
 }
 
