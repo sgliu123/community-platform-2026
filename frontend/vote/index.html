@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>社区投票</title>
+  <link rel="stylesheet" href="/style.vote.css">
+</head>
+<body>
+  <div class="container">
+    <h1>社区投票</h1>
+    <div id="step1">
+      <h2>身份核验</h2>
+      <input type="text" id="phoneLast5" placeholder="手机号后5位" maxlength="5">
+      <input type="text" id="idLast3" placeholder="身份证后3位" maxlength="3">
+      <input type="text" id="room" placeholder="房号（如 1-101）">
+      <button onclick="verify()">核验</button>
+      <p id="msg" class="msg"></p>
+    </div>
+    <div id="step2" style="display:none">
+      <h2>投票</h2>
+      <label><input type="radio" name="opt" value="赞成"> 赞成</label>
+      <label><input type="radio" name="opt" value="反对"> 反对</label>
+      <label><input type="radio" name="opt" value="弃权"> 弃权</label>
+      <input type="file" id="fileInput" multiple accept="image/*,.pdf">
+      <button onclick="submitVote()">提交</button>
+      <p id="msg2" class="msg"></p>
+    </div>
+    <div id="step3" style="display:none"><h2>投票成功，感谢参与！</h2></div>
+  </div>
+  <script src="/app.vote.js"></script>
+</body>
+</html>
