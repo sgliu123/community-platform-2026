@@ -1,0 +1,15 @@
+# 密钥与本地台账（绝不提交）
+*.key
+*.env
+.env.*
+owners_*.xlsx
+owners_*.csv
+台账*
+*映射*.xlsx
+
+# 依赖与构建产物
+node_modules/
+.wrangler/
+dist/
+*.log
+.DS_Store
