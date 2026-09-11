@@ -1,184 +1,208 @@
-// 后台 API：模板下载 / 导入 / 配置 / 统计 / 日志 / 删除 / 诊断 / 预置数据
-export async function onRequest(ctx) {
-  const { request, env, next } = ctx;
+export async function onRequest(context) {
+  const { request, env } = context;
   const url = new URL(request.url);
   const path = url.pathname;
-  const headers = { 'Content-Type': 'application/json' };
 
-  // 只处理 /api/admin/*，其余放行
-  if (!path.startsWith('/api/admin/')) return next(request);
+  if (!path.startsWith('/api/')) {
+    return env.ASSETS.fetch(request);
+  }
+
+  const db = env.DB;
+  const r2 = env.R2;
+
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  };
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
   try {
-    if (path === '/api/admin/health')        return handleHealth(env, headers);
-    if (path === '/api/admin/template')      return handleTemplate(env, request);
-    if (path === '/api/admin/import_owners') return handleImport(request, env, headers);
-    if (path === '/api/admin/config')        return handleConfig(request, env, headers);
-    if (path === '/api/admin/save_poll')     return handleSavePoll(request, env, headers);
-    if (path === '/api/admin/poll_result')   return handleResult(env, headers);
-    if (path === '/api/admin/audit_logs')    return handleLogs(request, env, headers);
-    if (path === '/api/admin/delete_user')   return handleDelete(request, env, headers);
-    if (path === '/api/admin/diagnose')      return handleDiagnose(request, env, headers);
-    if (path === '/api/admin/seed')          return handleSeed(request, env, headers);
-    if (path === '/api/admin/registry')      return handleRegistry(env, headers);
-    if (path === '/api/admin/export_csv')    return handleExportCSV(env, request);
-    return new Response(JSON.stringify({ error: 'Not Found', path }), { status: 404, headers });
-  } catch (e) {
-    return new Response(JSON.stringify({ error: 'Server Error', detail: e.message }), { status: 500, headers });
+    // 健康检查
+    if (path === '/api/admin/health' && request.method === 'GET') {
+      return new Response(JSON.stringify({ status: 'ok', db: !!db, r2: !!r2 }), { status: 200, headers: corsHeaders });
+    }
+
+    // 统计
+    if (path === '/api/admin/stats' && request.method === 'GET') {
+      const ownerStats = await db.prepare('SELECT COUNT(*) as totalOwners, COALESCE(SUM(area),0) as totalArea FROM owners').first();
+      return new Response(JSON.stringify(ownerStats), { status: 200, headers: corsHeaders });
+    }
+
+    // 获取业主清册
+    if (path === '/api/admin/owners' && request.method === 'GET') {
+      const owners = await db.prepare('SELECT id, room_no, name, area, hash FROM owners ORDER BY room_no').all();
+      return new Response(JSON.stringify(owners.results), { status: 200, headers: corsHeaders });
+    }
+
+    // 添加业主
+    if (path === '/api/admin/owners' && request.method === 'POST') {
+      const { room_no, name, area } = await request.json();
+      if (!room_no || !name || !area) {
+        return new Response(JSON.stringify({ error: '参数不完整' }), { status: 400, headers: corsHeaders });
+      }
+      const salt = 'community-salt-2026';
+      const hash = await sha256(room_no + salt);
+      await db.prepare('INSERT OR REPLACE INTO owners (room_no, name, area, hash) VALUES (?, ?, ?, ?)')
+        .bind(room_no, name, area, hash).run();
+      return new Response(JSON.stringify({ success: true }), { status: 201, headers: corsHeaders });
+    }
+
+    // 导入业主清册（CSV）
+    if (path === '/api/admin/import_owners' && request.method === 'POST') {
+      const formData = await request.formData();
+      const file = formData.get('file');
+      if (!file) {
+        return new Response(JSON.stringify({ error: '请上传CSV文件' }), { status: 400, headers: corsHeaders });
+      }
+      const text = await file.text();
+      const lines = text.split('\n').filter(line => line.trim());
+      let imported = 0;
+      for (const line of lines) {
+        const parts = line.split(',');
+        if (parts.length < 3) continue;
+        const room_no = parts[0].trim();
+        const name = parts[1].trim();
+        const areaStr = parts[2].trim();
+        const area = Math.round(parseFloat(areaStr) * 100);
+        if (isNaN(area)) continue;
+        const salt = 'community-salt-2026';
+        const hash = await sha256(room_no + salt);
+        await db.prepare('INSERT OR REPLACE INTO owners (room_no, name, area, hash) VALUES (?, ?, ?, ?)')
+          .bind(room_no, name, area, hash).run();
+        imported++;
+      }
+      return new Response(JSON.stringify({ success: true, imported }), { status: 200, headers: corsHeaders });
+    }
+
+    // 获取投票列表
+    if (path === '/api/admin/polls' && request.method === 'GET') {
+      const polls = await db.prepare('SELECT * FROM polls ORDER BY start_time DESC').all();
+      return new Response(JSON.stringify(polls.results), { status: 200, headers: corsHeaders });
+    }
+
+    // 创建投票
+    if (path === '/api/admin/polls' && request.method === 'POST') {
+      const { title, description, poll_category, start_time, end_time, options } = await request.json();
+      if (!title || !start_time || !end_time || !options) {
+        return new Response(JSON.stringify({ error: '参数不完整' }), { status: 400, headers: corsHeaders });
+      }
+      await db.prepare(
+        'INSERT INTO polls (title, description, poll_category, start_time, end_time, options, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(title, description || '', parseInt(poll_category) || 1, start_time, end_time, options, 'pending').run();
+      return new Response(JSON.stringify({ success: true }), { status: 201, headers: corsHeaders });
+    }
+
+    // 计票结果
+    if (path === '/api/admin/results' && request.method === 'GET') {
+      const polls = await db.prepare('SELECT * FROM polls ORDER BY start_time DESC').all();
+      const results = [];
+      for (const poll of polls.results) {
+        const stats = await computeResult(db, poll);
+        results.push(stats);
+      }
+      return new Response(JSON.stringify(results), { status: 200, headers: corsHeaders });
+    }
+
+    // 审计日志
+    if (path === '/api/admin/logs' && request.method === 'GET') {
+      const logs = await db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100').all();
+      return new Response(JSON.stringify(logs.results), { status: 200, headers: corsHeaders });
+    }
+
+    // 种子数据（预置51户/5645㎡）
+    if (path === '/api/admin/seed' && request.method === 'POST') {
+      const owners = [
+        ['1-1-101','张三',14000],['1-1-102','李四',12000],['1-1-201','王五',13000],
+        ['1-1-202','赵六',11000],['1-1-301','孙七',12500],['1-1-302','周八',13500],
+        ['1-2-101','吴九',14500],['1-2-102','郑十',11500],['1-2-201','冯一',12800],
+        ['1-2-202','陈二',13200],['1-2-301','褚三',13800],['1-2-302','卫四',14200],
+        ['2-1-101','蒋五',15000],['2-1-102','沈六',11800],['2-1-201','韩七',12200],
+        ['2-1-202','杨八',13600],['2-1-301','朱九',14400],['2-1-302','秦十',14800],
+        ['2-2-101','尤一',15200],['2-2-102','许二',10800],['2-2-201','何三',12600],
+        ['2-2-202','吕四',13400],['2-2-301','施五',14000],['2-2-302','张六',14600],
+        ['3-1-101','孔七',15500],['3-1-102','曹八',11200],['3-1-201','严九',12400],
+        ['3-1-202','华十',13800],['3-1-301','金一',14200],['3-1-302','魏二',15000],
+        ['3-2-101','陶三',16000],['3-2-102','姜四',10500],['3-2-201','戚五',12800],
+        ['3-2-202','谢六',13600],['3-2-301','邹七',14400],['3-2-302','喻八',15200],
+        ['4-1-101','柏九',15800],['4-1-102','水十',11000],['4-1-201','窦一',12200],
+        ['4-1-202','章二',13400],['4-1-301','云三',14000],['4-1-302','苏四',14800],
+        ['4-2-101','潘五',15600],['4-2-102','葛六',11400],['4-2-201','范七',12600],
+        ['4-2-202','彭八',13800],['4-2-301','鲁九',14600],['4-2-302','马十',15400],
+        ['5-1-101','方一',16200],['5-1-102','任二',10800],['5-1-201','姚三',12400],
+        ['5-1-202','卢四',13600],['5-1-301','汪五',14400]
+      ];
+      const salt = 'community-salt-2026';
+      let inserted = 0;
+      for (const [room_no, name, area] of owners) {
+        const hash = await sha256(room_no + salt);
+        await db.prepare('INSERT OR REPLACE INTO owners (room_no, name, area, hash) VALUES (?, ?, ?, ?)')
+          .bind(room_no, name, area, hash).run();
+        inserted++;
+      }
+      const totalArea = owners.reduce((sum, o) => sum + o[2], 0);
+      return new Response(JSON.stringify({ total: inserted, inserted, areaTotal: totalArea }), { status: 200, headers: corsHeaders });
+    }
+
+    return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers: corsHeaders });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
   }
 }
 
-async function handleHealth(env, h) {
-  let db = false, r2 = false;
-  try { await env.DB.prepare('SELECT 1').first(); db = true; } catch (e) {}
-  try { await env.ATTACH_BUCKET.list({ limit: 1 }); r2 = true; } catch (e) {}
-  return json(h, { status: 'ok', env: env.ENV, db: db ? 'ok' : 'err', r2: r2 ? 'ok' : 'err' });
-}
-
-// CSV 模板（含 BOM，Excel 可直接开）
-function handleTemplate(env, request) {
-  const csv = '﻿手机号,身份证号,房号,专有部分面积\n13800138000,110101199001011234,1-101,89.56';
-  return new Response(csv, {
-    headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="业主台账模板.csv"' }
-  });
-}
-
-// 批量导入：前端发 raw 片段，后端加盐哈希，幂等写入
-async function handleImport(req, env, headers) {
-  const { rows, batchId, adminEmail } = await req.json();
-  if (!Array.isArray(rows) || !rows.length) return json(headers, { error: '无数据' }, 400);
-  let inserted = 0, skipped = 0, failed = [];
-  for (let i = 0; i < rows.length; i++) {
-    const { uuid, raw, area, room } = rows[i];
-    try {
-      const hash = await sha256(`${raw}${env.HASH_SALT || ''}`);
-      const r = await env.DB.prepare('INSERT OR IGNORE INTO owner_identity (uuid, hash_digest, area_cents, room_no, import_batch) VALUES (?,?,?,?,?)')
-        .bind(uuid, hash, Math.round((parseFloat(area) || 0) * 100), room || null, batchId || null).run();
-      r.changes > 0 ? inserted++ : skipped++;
-    } catch (e) { failed.push({ row: i, reason: e.message }); }
+// 计票辅助函数
+async function computeResult(db, poll) {
+  const totalOwners = (await db.prepare('SELECT COUNT(*) as c FROM owners').first()).c;
+  const totalArea = (await db.prepare('SELECT COALESCE(SUM(area),0) as s FROM owners').first()).s;
+  const participants = (await db.prepare('SELECT COUNT(DISTINCT owner_id) as c FROM votes WHERE poll_id = ?').bind(poll.id).first()).c;
+  const areaParticipated = (await db.prepare('SELECT COALESCE(SUM(weight),0) as s FROM votes WHERE poll_id = ?').bind(poll.id).first()).s;
+  const approvalVotes = (await db.prepare('SELECT COUNT(*) as c FROM votes WHERE poll_id = ? AND choice = 0').bind(poll.id).first()).c;
+  const approvalArea = (await db.prepare('SELECT COALESCE(SUM(weight),0) as s FROM votes WHERE poll_id = ? AND choice = 0').bind(poll.id).first()).s;
+  const participationRate = totalOwners > 0 ? participants / totalOwners : 0;
+  const areaRate = totalArea > 0 ? areaParticipated / totalArea : 0;
+  const approvalRate = participants > 0 ? approvalVotes / participants : 0;
+  let conclusion = '未满足条件';
+  if (poll.poll_category <= 5) {
+    if (participationRate >= 2/3 && areaRate >= 2/3) {
+      if (approvalRate > 0.5 && approvalArea / areaParticipated > 0.5) {
+        conclusion = '通过（一般事项双过半）';
+      } else {
+        conclusion = '未通过（同意率不足50%）';
+      }
+    } else {
+      conclusion = '未达到双2/3参与门槛';
+    }
+  } else {
+    if (participationRate >= 2/3 && areaRate >= 2/3) {
+      if (approvalRate >= 0.75 && approvalArea / areaParticipated >= 0.75) {
+        conclusion = '通过（重大事项双3/4）';
+      } else {
+        conclusion = '未通过（同意率不足75%）';
+      }
+    } else {
+      conclusion = '未达到双2/3参与门槛';
+    }
   }
-  await log(env, null, 'import_owners', `${batchId}: ${inserted}/${rows.length}`, adminEmail);
-  return json(headers, { total: rows.length, inserted, skipped, failed });
+  return {
+    title: poll.title,
+    totalOwners,
+    totalArea,
+    participants,
+    areaParticipated,
+    participationRate,
+    areaRate,
+    approvalRate,
+    conclusion
+  };
 }
 
-// 读写 system_config
-async function handleConfig(req, env, headers) {
-  if (req.method === 'GET') {
-    const rows = await env.DB.prepare('SELECT config_key, config_value FROM system_config').all();
-    const cfg = {};
-    (rows.results || []).forEach(r => cfg[r.config_key] = r.config_value);
-    return json(headers, cfg);
-  }
-  const { key, value, adminEmail } = await req.json();
-  await env.DB.prepare('INSERT INTO system_config (config_key, config_value) VALUES (?,?) ON CONFLICT(config_key) DO UPDATE SET config_value=excluded.config_value').bind(key, value).run();
-  await log(env, null, 'update_config', `${key}=${value}`, adminEmail);
-  return json(headers, { success: true });
-}
-
-// 保存投票事项（category 决定门槛）
-async function handleSavePoll(req, env, headers) {
-  const { title, category, description, adminEmail } = await req.json();
-  await env.DB.prepare('UPDATE poll_config SET title=?, category=?, description=? WHERE poll_id=?')
-    .bind(title, category, description, 'single_poll').run();
-  await log(env, null, 'save_poll', `category=${category}`, adminEmail);
-  return json(headers, { success: true });
-}
-
-// 统计（与前台算法一致）
-async function handleResult(env, h) {
-  const cfg = await env.DB.prepare('SELECT category FROM poll_config WHERE poll_id=?').bind('single_poll').first();
-  const cat = cfg ? cfg.category : 1;
-  const total = await env.DB.prepare('SELECT COUNT(*) c, COALESCE(SUM(area_cents),0) a FROM owner_identity').first();
-  const voted = await env.DB.prepare('SELECT COUNT(*) c, COALESCE(SUM(o.area_cents),0) a FROM owner_identity o JOIN vote_records v ON o.uuid=v.uuid').first();
-  const agree = await env.DB.prepare("SELECT COUNT(*) c, COALESCE(SUM(o.area_cents),0) a FROM owner_identity o JOIN vote_records v ON o.uuid=v.uuid WHERE v.vote_content='赞成'").first();
-  const ph = total.c ? voted.c / total.c : 0, pa = total.a ? voted.a / total.a : 0;
-  const vh = voted.c ? agree.c / voted.c : 0, va = total.a ? agree.a / total.a : 0;
-  const partReq = 2 / 3;
-  const agreeReq = (cat >= 6 && cat <= 8) ? 0.75 : 0.5;
-  const agreeStrict = !(cat >= 6 && cat <= 8);
-  const passed = (ph >= partReq && pa >= partReq) && (agreeStrict ? (vh > agreeReq && va > agreeReq) : (vh >= agreeReq && va >= agreeReq));
-  return json(h, {
-    total: { households: total.c, area_cents: total.a },
-    voted: { households: voted.c, area_cents: voted.a },
-    agree: { households: agree.c, area_cents: agree.a },
-    rates: { participationHousehold: ph, participationArea: pa, agreeHousehold: vh, agreeArea: va },
-    category: cat,
-    thresholds: { participation: partReq, agree: agreeReq, agreeStrictGreater: agreeStrict },
-    passed
-  });
-}
-
-async function handleLogs(req, env, headers) {
-  const rows = await env.DB.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 200').all();
-  return json(headers, rows.results || []);
-}
-
-// 按 UUID 删除全部数据（满足删除权）+ 级联删 R2
-async function handleDelete(req, env, headers) {
-  const { uuid, adminEmail } = await req.json();
-  const keys = await env.DB.prepare('SELECT key FROM attachments WHERE uuid=?').bind(uuid).all();
-  for (const r of (keys.results || [])) { try { await env.ATTACH_BUCKET.delete(r.key); } catch (e) {} }
-  await env.DB.prepare('DELETE FROM attachments WHERE uuid=?').bind(uuid).run();
-  await env.DB.prepare('DELETE FROM vote_records WHERE uuid=?').bind(uuid).run();
-  await env.DB.prepare('DELETE FROM audit_logs WHERE uuid=?').bind(uuid).run();
-  await env.DB.prepare('DELETE FROM owner_identity WHERE uuid=?').bind(uuid).run();
-  await log(env, uuid, 'delete_user', `deleted ${uuid}`, adminEmail);
-  return json(headers, { success: true });
-}
-
-async function handleDiagnose(req, env, headers) {
-  if (!req.headers.get('cf-access-authenticated-user-email')) return json(headers, { error: 'Unauthorized' }, 403);
-  const r = {};
-  const o = await env.DB.prepare('SELECT COUNT(*) c FROM owner_identity').first(); r.owners = o.c;
-  const v = await env.DB.prepare('SELECT COUNT(*) c FROM vote_records').first(); r.votes = v.c;
-  return json(headers, { env: env.ENV, ...r });
-}
-
-// ====== 幂等预置 51 户测试数据（5645㎡），可重复调用，覆盖更新 ======
-async function handleSeed(req, env, headers) {
-  const SALT = env.HASH_SALT || '';
-  const owners = [
-    ['1-1-101',92],['1-1-102',99],['1-1-201',93],['1-1-202',112],['1-1-301',114],['1-1-302',94],
-    ['1-2-101',92],['1-2-102',104],['1-2-201',127],['1-2-202',116],['1-2-301',108],['1-2-302',102],
-    ['2-1-101',131],['2-1-102',110],['2-1-201',118],['2-1-202',108],['2-1-301',118],['2-1-302',101],
-    ['2-2-101',93],['2-2-102',130],['2-2-201',125],['2-2-202',113],['2-2-301',130],['2-2-302',129],
-    ['3-1-101',104],['3-1-102',132],['3-1-201',124],['3-1-202',115],['3-1-301',99],['3-1-302',110],
-    ['3-2-101',101],['3-2-102',106],['3-2-201',119],['3-2-202',132],['3-2-301',98],['3-2-302',92],
-    ['4-1-101',107],['4-1-102',94],['4-1-201',128],['4-1-202',121],['4-1-301',105],['4-1-302',115],
-    ['4-2-101',101],['4-2-102',99],['4-2-201',99],['4-2-202',95],['4-2-301',120],['4-2-302',125],
-    ['5-1-101',104],['5-1-102',129],['5-1-201',112]
-  ];
-  let inserted = 0, areaTotal = 0;
-  for (const [room, area] of owners) {
-    const hash = await sha256(`00000${''}${room}${SALT}`); // 与 verify 公式一致：phoneLast5 + idLast3(空) + room + SALT
-    const r = await env.DB.prepare('INSERT OR REPLACE INTO owner_identity (uuid, hash_digest, area_cents, room_no, import_batch) VALUES (?,?,?,?,?)')
-      .bind(crypto.randomUUID(), hash, area * 100, room, 'seed').run();
-    inserted++; areaTotal += area;
-  }
-  return json(headers, { total: owners.length, inserted, areaTotal });
-}
-
-// 业主清册（供后台列表 / 投票校验）
-async function handleRegistry(env, h) {
-  const rows = await env.DB.prepare('SELECT uuid, room_no, area_cents, has_voted FROM owner_identity ORDER BY room_no').all();
-  return json(h, rows.results || []);
-}
-
-// 导出 CSV 投票结果
-async function handleExportCSV(env, request) {
-  const rows = await env.DB.prepare('SELECT o.room_no, o.area_cents, v.vote_content, v.created_at FROM owner_identity o LEFT JOIN vote_records v ON o.uuid=v.uuid ORDER BY o.room_no').all();
-  const lines = ['房号,面积(㎡),投票选项,投票时间'];
-  for (const r of (rows.results || [])) {
-    lines.push(`${r.room_no},${(r.area_cents / 100).toFixed(2)},${r.vote_content || '未投票'},${r.created_at || ''}`);
-  }
-  return new Response('﻿' + lines.join('\n'), {
-    headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="投票结果.csv"' }
-  });
-}
-
-async function sha256(msg) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(msg));
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
-}
-function json(h, body, status) { return new Response(JSON.stringify(body), { headers: h, status: status || 200 }); }
-async function log(env, uuid, action, detail, admin) {
-  await env.DB.prepare('INSERT INTO audit_logs (uuid, admin_user, action, detail) VALUES (?,?,?,?)').bind(uuid, admin || 'unknown', action, detail).run();
+async function sha256(str) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
