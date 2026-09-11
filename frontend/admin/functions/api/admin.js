@@ -5,17 +5,17 @@ export async function onRequest(ctx) {
   const path = url.pathname;
   const headers = { 'Content-Type': 'application/json' };
 
-  if (!path.startsWith('/api/')) return next(request);
+  if (!path.startsWith('/api/admin/')) return next(request);
   try {
-    if (path === '/api/health')        return handleHealth(env, headers);
-    if (path === '/api/template')      return handleTemplate(env, request);   // CSV 模板下载
-    if (path === '/api/import_owners') return handleImport(request, env, headers);
-    if (path === '/api/config')        return handleConfig(request, env, headers);
-    if (path === '/api/save_poll')     return handleSavePoll(request, env, headers);
-    if (path === '/api/poll_result')   return handleResult(env, headers);
-    if (path === '/api/audit_logs')    return handleLogs(request, env, headers);
-    if (path === '/api/delete_user')   return handleDelete(request, env, headers);
-    if (path === '/api/diagnose')      return handleDiagnose(request, env, headers);
+    if (path === '/api/admin/health')        return handleHealth(env, headers);
+    if (path === '/api/admin/template')      return handleTemplate(env, request);   // CSV 模板下载
+    if (path === '/api/admin/import_owners') return handleImport(request, env, headers);
+    if (path === '/api/admin/config')        return handleConfig(request, env, headers);
+    if (path === '/api/admin/save_poll')     return handleSavePoll(request, env, headers);
+    if (path === '/api/admin/poll_result')   return handleResult(env, headers);
+    if (path === '/api/admin/audit_logs')    return handleLogs(request, env, headers);
+    if (path === '/api/admin/delete_user')   return handleDelete(request, env, headers);
+    if (path === '/api/admin/diagnose')      return handleDiagnose(request, env, headers);
     return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers });
   } catch (e) {
     return new Response(JSON.stringify({ error: 'Server Error' }), { status: 500, headers });
