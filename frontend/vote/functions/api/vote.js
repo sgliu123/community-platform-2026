@@ -5,14 +5,14 @@ export async function onRequest(ctx) {
   const path = url.pathname;
   const headers = { 'Content-Type': 'application/json' };
 
-  if (!path.startsWith('/api/')) return next(request);
+  if (!path.startsWith('/api/vote/')) return next(request);
   try {
-    if (path === '/api/health')       return handleHealth(env, headers);
-    if (path === '/api/verify')       return handleVerify(request, env, headers);
-    if (path === '/api/submit_vote')  return handleSubmit(request, env, headers);
-    if (path === '/api/upload_url')   return handleUploadUrl(request, env, headers);
-    if (path === '/api/poll_result')  return handleResult(env, headers);
-    if (path === '/api/diagnose')     return handleDiagnose(request, env, headers);
+    if (path === '/api/vote/health')       return handleHealth(env, headers);
+    if (path === '/api/vote/verify')       return handleVerify(request, env, headers);
+    if (path === '/api/vote/submit_vote')  return handleSubmit(request, env, headers);
+    if (path === '/api/vote/upload_url')   return handleUploadUrl(request, env, headers);
+    if (path === '/api/vote/poll_result')  return handleResult(env, headers);
+    if (path === '/api/vote/diagnose')     return handleDiagnose(request, env, headers);
     return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers });
   } catch (e) {
     return new Response(JSON.stringify({ error: 'Server Error' }), { status: 500, headers });
