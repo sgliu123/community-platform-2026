@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>投票管理后台</title>
+  <link rel="stylesheet" href="/style.admin.css">
+</head>
+<body>
+  <div class="container">
+    <h1>投票管理后台</h1>
+    <nav>
+      <button onclick="tab('import')">台账导入</button>
+      <button onclick="tab('poll')">事项设置</button>
+      <button onclick="tab('result')">投票统计</button>
+      <button onclick="tab('logs')">审计日志</button>
+      <button onclick="tab('delete')">数据删除</button>
+      <button onclick="tab('diagnose')">诊断</button>
+    </nav>
+
+    <div id="tab-import" class="tab active">
+      <h2>导入业主台账</h2>
+      <p>列：手机号, 身份证号, 房号, 专有部分面积（产权面积）</p>
+      <button onclick="downloadTemplate()">下载模板</button>
+      <input type="file" id="csvFile" accept=".csv,.xlsx,.xls">
+      <button onclick="importOwners()">开始导入</button>
+      <pre id="importResult"></pre>
+    </div>
+
+    <div id="tab-poll" class="tab">
+      <h2>事项设置（民法典第278条）</h2>
+      <input type="text" id="pollTitle" placeholder="事项标题">
+      <select id="pollCategory">
+        <option value="1">1 议事规则</option>
+        <option value="2">2 管理规约</option>
+        <option value="3">3 业委会</option>
+        <option value="4">4 物业选聘</option>
+        <option value="5">5 使用维修资金</option>
+        <option value="6">6 筹集维修资金（重大）</option>
+        <option value="7">7 改建重建（重大）</option>
+        <option value="8">8 共有部分用途（重大）</option>
+        <option value="9">9 其他重大事项</option>
+      </select>
+      <button onclick="savePoll()">保存</button>
+      <p id="pollMsg"></p>
+    </div>
+
+    <div id="tab-result" class="tab">
+      <h2>投票统计</h2>
+      <button onclick="loadResult()">刷新</button>
+      <div id="resultBox"></div>
+    </div>
+
+    <div id="tab-logs" class="tab">
+      <h2>审计日志</h2>
+      <button onclick="loadLogs()">刷新</button>
+      <table><thead><tr><th>时间</th><th>操作</th><th>详情</th></tr></thead><tbody id="logBody"></tbody></table>
+    </div>
+
+    <div id="tab-delete" class="tab">
+      <h2>删除用户数据</h2>
+      <input type="text" id="delUuid" placeholder="UUID">
+      <button onclick="deleteUser()">删除（含附件、投票、日志）</button>
+      <p id="delMsg"></p>
+    </div>
+
+    <div id="tab-diagnose" class="tab">
+      <h2>系统诊断</h2>
+      <button onclick="diagnose()">运行</button>
+      <pre id="diagResult"></pre>
+    </div>
+  </div>
+  <script src="/app.admin.js"></script>
+</body>
+</html>

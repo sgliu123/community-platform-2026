@@ -1,0 +1,22 @@
+name = "admin-frontend"
+compatibility_date = "2026-09-10"
+pages_build_output_dir = "."
+
+[[d1_databases]]
+binding = "DB"
+database_name = "poll-db"
+database_id = "<PROD_DB_ID>"
+
+[[r2_buckets]]
+binding = "ATTACH_BUCKET"
+bucket_name = "poll-attachments"
+
+[env.preview]
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "poll-db"
+database_id = "<PREVIEW_DB_ID>"
+
+[[env.preview.r2_buckets]]
+binding = "ATTACH_BUCKET"
+bucket_name = "poll-attachments-preview"
