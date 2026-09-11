@@ -88,4 +88,13 @@ async function diagnose() {
   document.getElementById('diagResult').textContent = JSON.stringify(d, null, 2);
 }
 
+// 一键预置 51 户测试数据（5645㎡），可重复执行，覆盖更新
+async function seedData() {
+  const btn = document.getElementById('seedBtn');
+  btn.disabled = true; btn.textContent = '导入中...';
+  const d = await (await fetch('/api/admin/seed', { method: 'POST' })).json();
+  btn.disabled = false; btn.textContent = '预置测试数据';
+  document.getElementById('seedResult').textContent = `已导入 ${d.inserted} 户，总面积 ${d.areaTotal} ㎡`;
+}
+
 window.onload = () => { loadResult(); loadLogs(); };
