@@ -1,36 +1,110 @@
-let uuid = null;
-let keys = [];
+// 全局变量
+let currentRoom = '';
+let currentPollId = null;
 
-async function verify() {
-  const room = document.getElementById('room').value.trim();
-  const msg = document.getElementById('msg');
-  if (!room) { msg.className = 'msg error'; msg.textContent = '请输入房号（如 1-1-101）'; return; }
-  // 与后端 seed 保持一致：raw = 手机后5(00000) + 身份证后3(空) + 房号
-  const res = await fetch('/api/vote/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phoneLast5: '00000', idLast3: '', room }) });
-  const d = await res.json();
-  if (d.success) { uuid = d.uuid; msg.className = 'msg success'; msg.textContent = '核验通过'; document.getElementById('step1').style.display = 'none'; document.getElementById('step2').style.display = 'block'; }
-  else { msg.className = 'msg error'; msg.textContent = d.error; }
+document.addEventListener('DOMContentLoaded', async () => {
+  const savedUuid = localStorage.getItem('vote_uuid');
+  if (savedUuid) {
+    currentRoom = localStorage.getItem('vote_room') || '';
+    showPolls();
+  } else {
+    document.getElementById('verify-section').style.display = 'block';
+    document.getElementById('loading').style.display = 'none';
+  }
+
+  document.getElementById('verify-btn').addEventListener('click', verifyIdentity);
+});
+
+async function verifyIdentity() {
+  const room = document.getElementById('room-input').value.trim();
+  if (!room) {
+    document.getElementById('verify-error').textContent = '请输入房号';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/vote/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room })
+    });
+    const data = await res.json();
+    if (data.success) {
+      localStorage.setItem('vote_uuid', data.uuid);
+      localStorage.setItem('vote_room', room);
+      currentRoom = room;
+      document.getElementById('verify-section').style.display = 'none';
+      showPolls();
+    } else {
+      document.getElementById('verify-error').textContent = data.message || '核验失败';
+    }
+  } catch (e) {
+    document.getElementById('verify-error').textContent = '网络错误，请稍后重试';
+  }
+}
+
+async function showPolls() {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('polls-section').style.display = 'block';
+  try {
+    const res = await fetch('/api/vote/polls');
+    const polls = await res.json();
+    const listDiv = document.getElementById('polls-list');
+    listDiv.innerHTML = polls.map(p => `
+      <div class="poll-item" onclick="showPollDetail(${p.id})">
+        <h3>${p.title}</h3>
+        <p>${p.description || ''}</p>
+        <small>${p.start_time} ~ ${p.end_time}</small>
+        <span style="float:right;color:${p.status==='active'?'green':'gray'}">${p.status==='active'?'进行中':'已结束'}</span>
+      </div>
+    `).join('');
+  } catch(e) {
+    alert('获取投票列表失败');
+  }
+}
+
+async function showPollDetail(pollId) {
+  currentPollId = pollId;
+  document.getElementById('polls-section').style.display = 'none';
+  document.getElementById('poll-detail').style.display = 'block';
+
+  try {
+    const res = await fetch(`/api/vote/poll/${pollId}`);
+    const poll = await res.json();
+    document.getElementById('poll-title').textContent = poll.title;
+    document.getElementById('poll-desc').textContent = poll.description;
+    const optionsDiv = document.getElementById('poll-options');
+    const opts = JSON.parse(poll.options);
+    optionsDiv.innerHTML = opts.map((opt, i) => `
+      <label class="option-item" data-index="${i}">
+        <input type="radio" name="choice" value="${i}"> ${opt}
+      </label>
+    `).join('');
+    document.getElementById('submit-vote-btn').onclick = submitVote;
+  } catch(e) {
+    alert('获取投票详情失败');
+  }
 }
 
 async function submitVote() {
-  const opt = document.querySelector('input[name=opt]:checked');
-  const msg = document.getElementById('msg2');
-  if (!opt) { msg.className = 'msg error'; msg.textContent = '请选择选项'; return; }
-  const res = await fetch('/api/vote/submit_vote', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uuid, voteContent: opt.value, attachmentKeys: keys }) });
-  const d = await res.json();
-  if (d.success) { document.getElementById('step2').style.display = 'none'; document.getElementById('step3').style.display = 'block'; }
-  else { msg.className = 'msg error'; msg.textContent = d.error; }
-}
-
-document.getElementById('fileInput').addEventListener('change', async function (e) {
-  const files = e.target.files;
-  for (const f of files) {
-    const r = await fetch('/api/vote/upload_url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uuid, fileName: f.name, contentType: f.type }) });
-    const { uploadUrl, key, viewUrl } = await r.json();
-    await fetch(uploadUrl, { method: 'PUT', body: f, headers: { 'Content-Type': f.type } });
-    keys.push({ key, viewUrl });
+  const selected = document.querySelector('input[name="choice"]:checked');
+  if (!selected) { alert('请选择一个选项'); return; }
+  const choice = parseInt(selected.value);
+  const uuid = localStorage.getItem('vote_uuid');
+  try {
+    const res = await fetch('/api/vote/submit_vote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uuid, poll_id: currentPollId, choice })
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('vote-result').textContent = '投票成功！';
+      setTimeout(() => { window.location.reload(); }, 1500);
+    } else {
+      document.getElementById('vote-result').textContent = data.message || '投票失败';
+    }
+  } catch(e) {
+    document.getElementById('vote-result').textContent = '网络错误';
   }
-  // 预览附件（PDF / 图片）
-  const preview = document.getElementById('attachPreview');
-  if (preview) preview.innerHTML = keys.map(k => `<li><a href="${k.viewUrl}" target="_blank">${k.key.split('/').pop()}</a></li>`).join('');
-});
+}
