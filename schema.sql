@@ -60,10 +60,11 @@ CREATE TABLE IF NOT EXISTS poll_config (
 );
 
 INSERT OR IGNORE INTO poll_config (poll_id, title, category) VALUES ('single_poll', '首次投票', 1);
-INSERT OR IGNORE INTO system_config (config_key, config_value) VALUES ('verify_mode', 'ledger');
-INSERT OR IGNORE INTO system_config (config_key, config_value) VALUES ('batch_size', '50');
 
 CREATE TABLE IF NOT EXISTS system_config (
   config_key TEXT PRIMARY KEY,
   config_value TEXT
 );
+
+INSERT OR IGNORE INTO system_config (config_key, config_value) VALUES ('verify_mode', 'ledger');
+INSERT OR IGNORE INTO system_config (config_key, config_value) VALUES ('batch_size', '50');
